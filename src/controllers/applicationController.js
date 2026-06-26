@@ -1,15 +1,8 @@
+// src/controllers/applicationController.js
 const Application        = require("../models/Application");
 const uploadToCloudinary = require("../utils/cloudinaryUpload");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPER: parse dot-notation / bracket-notation FormData keys → nested object
-//
-// The frontend's appendToFormData() serialises the entire formData tree using
-// the full key path as the multipart field name:
-//   "step1.firstName"              → { step1: { firstName: "John" } }
-//   "checklist.files.passportCopy" → { checklist: { files: { passportCopy: … } } }
-//   "emergencyContacts[0].fullName"→ { emergencyContacts: [{ fullName: "…" }] }
-// ─────────────────────────────────────────────────────────────────────────────
+// Parse dot-notation / bracket-notation flat FormData keys → nested object
 function parseDotKeys(flat) {
   const result = {};
   for (const [rawKey, value] of Object.entries(flat)) {
@@ -31,16 +24,9 @@ function parseDotKeys(flat) {
   return result;
 }
 
-// Upload one file buffer to Cloudinary, return { url, publicId }
-async function uploadOne(file, folder) {
-  console.log(`  [UPLOAD] ${file.fieldname} → ${file.originalname} (${file.size} bytes)`);
-  const result = await uploadToCloudinary(file.buffer, folder);
-  console.log(`  [UPLOAD] ✅ ${result.secure_url}`);
-  return { url: result.secure_url, publicId: result.public_id };
-}
-
-// Deep-set a dot-path on a nested object (mutates obj)
+// Deep-set a dot-path on a nested object (supports array indices)
 function setDeep(obj, dotPath, value) {
+  // Normalise bracket notation → dot notation first
   const parts = dotPath.replace(/\[(\d+)\]/g, ".$1").split(".");
   let cursor = obj;
   for (let i = 0; i < parts.length - 1; i++) {
@@ -53,24 +39,40 @@ function setDeep(obj, dotPath, value) {
   cursor[parts[parts.length - 1]] = value;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// Upload one file buffer to Cloudinary
+async function uploadOne(file, folder) {
+  console.log(`  [UPLOAD] ${file.fieldname} → ${file.originalname} (${file.size} bytes)`);
+  const result = await uploadToCloudinary(file.buffer, folder);
+  console.log(`  [UPLOAD] ✅ ${result.secure_url}`);
+  return { url: result.secure_url, publicId: result.public_id };
+}
+
+// Build the publicId storage path from the file's fieldname.
+// FIX: previous regex /(\w+)$/ matched the INDEX digit on array paths like
+// "checklist.files.passportPhotos[0]" → produced "passportPhotos[0PublicId]"
+// which is invalid. Now we strip the bracket index, append PublicId to the
+// field name, then put the index back.
+//   "checklist.files.passportPhotos[0]" → "checklist.files.passportPhotosPublicId[0]"
+//   "step1.photoUrl"                    → "step1.photoUrlPublicId"
+//   "checklist.files.passportCopy"      → "checklist.files.passportCopyPublicId"
+function publicIdPath(fieldname) {
+  const bracketMatch = fieldname.match(/^(.*?)(\[\d+\])$/);
+  if (bracketMatch) {
+    // Has trailing index → insert PublicId before the bracket
+    return bracketMatch[1] + "PublicId" + bracketMatch[2];
+  }
+  return fieldname + "PublicId";
+}
+
 // POST /api/applications
-// ─────────────────────────────────────────────────────────────────────────────
 exports.createApplication = async (req, res) => {
   try {
-    // multer.any() → req.body has text fields (flat dot-notation keys)
-    //             → req.files is an array of { fieldname, originalname, buffer, ... }
     console.log("\n[APP CREATE] ─────────────────────────────────");
     console.log("[APP CREATE] Body keys:", Object.keys(req.body).length, "fields");
     console.log("[APP CREATE] Files:", (req.files || []).map(f => f.fieldname));
 
-    // 1. Rebuild nested structure from flat text fields
     const nested = parseDotKeys(req.body);
 
-    // 2. Upload every file to Cloudinary
-    //    The fieldname IS the dot-path (e.g. "step1.photoUrl",
-    //    "checklist.files.passportCopy", "checklist.files.passportPhotos[0]")
-    //    Upload it, then store the Cloudinary URL at the same dot-path.
     const files = req.files || [];
     for (const file of files) {
       const folder = file.fieldname.startsWith("checklist")
@@ -79,11 +81,8 @@ exports.createApplication = async (req, res) => {
 
       const { url, publicId } = await uploadOne(file, folder);
 
-      // Store URL at the exact same path the frontend used for the File object
-      setDeep(nested, file.fieldname, url);
-
-      // Also store publicId alongside (append "PublicId" to the path)
-      setDeep(nested, file.fieldname.replace(/(\w+)$/, "$1PublicId"), publicId);
+      setDeep(nested, file.fieldname, url);              // store URL at original path
+      setDeep(nested, publicIdPath(file.fieldname), publicId); // store publicId alongside
     }
 
     console.log("[APP CREATE] Saving to MongoDB...");
@@ -97,14 +96,12 @@ exports.createApplication = async (req, res) => {
     res.status(400).json({
       success: false,
       message: err.message,
-      hint: err.name === "ValidationError"
-        ? "One or more required fields are missing or invalid."
-        : undefined,
+      hint: err.name === "ValidationError" ? "One or more required fields are missing." : undefined,
     });
   }
 };
 
-// GET /api/applications  (newest first)
+// GET /api/applications
 exports.getApplications = async (req, res) => {
   try {
     const data = await Application.find().sort({ createdAt: -1 });
@@ -136,7 +133,7 @@ exports.updateApplication = async (req, res) => {
         : "harley-admissions/photos";
       const { url, publicId } = await uploadOne(file, folder);
       setDeep(nested, file.fieldname, url);
-      setDeep(nested, file.fieldname.replace(/(\w+)$/, "$1PublicId"), publicId);
+      setDeep(nested, publicIdPath(file.fieldname), publicId);
     }
     const data = await Application.findByIdAndUpdate(req.params.id, nested, {
       new: true, runValidators: true,
