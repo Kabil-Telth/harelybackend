@@ -1,15 +1,16 @@
-const router = require("express").Router();
-const upload = require("../middleware/upload");
-const c      = require("../controllers/organisationController");
+// src/routes/organisationRoutes.js
+const router  = require("express").Router();
+const upload  = require("../middleware/upload");
+const c       = require("../controllers/organisationController");
+const { protect } = require("../middleware/auth");
 
-// Organisation registration form sends JSON or FormData (no file uploads)
-// Use multer.none() to parse multipart text fields without any file
-const textOnly = upload.none();
+// POST — public (organisation submits their own registration)
+router.post("/", upload.none(), c.createOrganisation);
 
-router.post("/",     textOnly, c.createOrganisation);
-router.get("/",               c.getOrganisations);
-router.get("/:id",            c.getOrganisation);
-router.put("/:id",   textOnly, c.updateOrganisation);
-router.delete("/:id",         c.deleteOrganisation);
+// READ / UPDATE / DELETE — admin only
+router.get("/",     protect, c.getOrganisations);
+router.get("/:id",  protect, c.getOrganisation);
+router.put("/:id",  protect, upload.none(), c.updateOrganisation);
+router.delete("/:id", protect, c.deleteOrganisation);
 
 module.exports = router;

@@ -24,10 +24,6 @@ const InstitutionPartnerSchema = new mongoose.Schema({
     whatsappNumber: { type: String },
   },
 
-  institutionProfile: { type: String, required: true }, // description
-
-  logoUrl:       { type: String }, // cloudinary secure_url — FIX: was storing only filename
-  logoPublicId:  { type: String }, // cloudinary public_id
 
   status: {
     type: String,
